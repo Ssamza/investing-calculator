@@ -1073,14 +1073,16 @@ export default function App() {
 			setStatus({ ok: false, msg: `✕ No encontré posiciones en "${fileName}".` });
 			return;
 		}
-		const current = portfolioRef.current;
+		// Leer siempre desde Supabase para evitar cualquier problema de estado
+		const { data: row } = await supabase.from("holdings").select("data").eq("id", 1).single();
+		const current = Array.isArray(row?.data) ? row.data : [];
 		const merged = mergePortfolios(current, rows);
 		await persist(merged);
 		const added = merged.length - current.length;
 		const updated = rows.length - Math.max(0, added);
 		setStatus({
 			ok: true,
-			msg: `✓ "${fileName}" cargado — ${added} posiciones nuevas, ${updated} combinadas.`,
+			msg: `✓ "${fileName}" — ${added} posiciones nuevas, ${updated} combinadas.`,
 		});
 		setTicker("");
 		setShares("");
