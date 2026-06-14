@@ -1,5 +1,6 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import { supabase } from "./lib/supabase";
 
 // ── Diseño: tokens ───────────────────────────────────────────────────────────
 const C = {
@@ -1106,6 +1107,26 @@ export default function App() {
 	const [avg, setAvg] = useState("");
 	const [pending, setPending] = useState(null); // { rows, fileName, dupes }
 	const [status, setStatus] = useState(null);
+	const [loaded, setLoaded] = useState(false);
+
+	useEffect(() => {
+		supabase
+			.from("holdings")
+			.select("data")
+			.eq("id", 1)
+			.single()
+			.then(({ data: row }) => {
+				if (Array.isArray(row?.data) && row.data.length) setPortfolio(row.data);
+			})
+			.finally(() => setLoaded(true));
+	}, []);
+
+	const persist = async (data) => {
+		setPortfolio(data);
+		await supabase
+			.from("holdings")
+			.upsert({ id: 1, data, updated_at: new Date().toISOString() });
+	};
 
 	const onFileParsed = (rows, fileName) => {
 		if (!rows) {
@@ -1128,8 +1149,8 @@ export default function App() {
 		setPending({ rows, fileName, dupes });
 	};
 
-	const applyReplace = () => {
-		setPortfolio([...pending.rows].sort((a, b) => a.t.localeCompare(b.t)));
+	const applyReplace = async () => {
+		await persist([...pending.rows].sort((a, b) => a.t.localeCompare(b.t)));
 		setStatus({
 			ok: true,
 			msg: `✓ Portafolio reemplazado: ${pending.rows.length} posiciones de "${pending.fileName}".`,
@@ -1140,9 +1161,9 @@ export default function App() {
 		setAvg("");
 	};
 
-	const applyMerge = () => {
+	const applyMerge = async () => {
 		const merged = mergePortfolios(portfolio, pending.rows);
-		setPortfolio(merged);
+		await persist(merged);
 		setStatus({
 			ok: true,
 			msg: `✓ Datos añadidos: ahora tienes ${merged.length} posiciones (${pending.dupes} combinadas con promedio ponderado).`,
@@ -1265,6 +1286,13 @@ export default function App() {
 					))}
 				</div>
 
+				{!loaded ? (
+					<Card>
+						<div style={{ fontSize: 13, color: C.muted, textAlign: "center", padding: 10 }}>
+							Cargando tu portafolio…
+						</div>
+					</Card>
+				) : (
 				<>
 					{tab !== "portafolio" && (
 						<PositionPicker
@@ -1288,6 +1316,7 @@ export default function App() {
 						/>
 					)}
 				</>
+				)}
 
 				<div
 					style={{
