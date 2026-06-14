@@ -326,22 +326,24 @@ function parseSheetRows(rows) {
 
 // Combinar: tickers repetidos se suman (promedio ponderado), nuevos se agregan.
 function mergePortfolios(current, incoming) {
-	const map = new Map(current.map((p) => [p.t, { ...p }]));
+	const key = (t) => String(t ?? "").trim().toUpperCase();
+	const map = new Map(current.map((p) => [key(p.t), { ...p, t: key(p.t) }]));
 	for (const np of incoming) {
-		const ex = map.get(np.t);
+		const k = key(np.t);
+		const ex = map.get(k);
 		if (ex) {
-			const sh = ex.sh + np.sh;
-			const inv = ex.inv + np.inv;
-			map.set(np.t, {
-				t: np.t,
+			const sh = Number(ex.sh) + Number(np.sh);
+			const inv = Number(ex.inv) + Number(np.inv);
+			map.set(k, {
+				t: k,
 				n: np.n || ex.n,
 				sh,
 				inv,
 				avg: sh > 0 ? inv / sh : 0,
-				hist: ex.hist + np.hist,
+				hist: Number(ex.hist) + Number(np.hist),
 			});
 		} else {
-			map.set(np.t, { ...np });
+			map.set(k, { ...np, t: k });
 		}
 	}
 	return [...map.values()].sort((a, b) => a.t.localeCompare(b.t));
