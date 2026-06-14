@@ -1,35 +1,5 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
-
-// ── Portafolio inicial (de tu Excel original) ────────────────────────────────
-const DEFAULT_PORTFOLIO = [
-  { t: "ADBE", n: "Adobe Inc", sh: 2.7, avg: 279.8305, inv: 755.54, hist: 755.54 },
-  { t: "CELH", n: "Celsius Holdings", sh: 44.6241, avg: 36.5688, inv: 1631.85, hist: 1877.41 },
-  { t: "CMG", n: "Chipotle Mexican Grill", sh: 44.9908, avg: 29.6549, inv: 1334.2, hist: 1783.11 },
-  { t: "DLO", n: "DLocal Ltd", sh: 87.8889, avg: 11.4193, inv: 1003.63, hist: 1003.63 },
-  { t: "DUOL", n: "Duolingo", sh: 25.997, avg: 142.8349, inv: 3713.28, hist: 3713.28 },
-  { t: "FOUR", n: "Shift4 Payments", sh: 27.2524, avg: 55.1378, inv: 1502.64, hist: 1502.64 },
-  { t: "HIMS", n: "Hims & Hers Health", sh: 82.16, avg: 26.068, inv: 2141.75, hist: 2141.75 },
-  { t: "LULU", n: "Lululemon Athletica", sh: 12.3601, avg: 142.3369, inv: 1759.3, hist: 1835.05 },
-  { t: "LW", n: "Lamb Weston Holdings", sh: 27.2433, avg: 46.0683, inv: 1255.05, hist: 1255.05 },
-  { t: "MELI", n: "MercadoLibre", sh: 1.3936, avg: 1614.4309, inv: 2249.87, hist: 2249.87 },
-  { t: "MSFT", n: "Microsoft Corp", sh: 2.7098, avg: 369.389, inv: 1000.97, hist: 1000.97 },
-  { t: "NFLX", n: "Netflix Inc", sh: 6.1349, avg: 81.556, inv: 500.34, hist: 2003.6 },
-  { t: "NKE", n: "Nike Inc", sh: 28.9794, avg: 51.8391, inv: 1502.27, hist: 1502.27 },
-  { t: "NU", n: "Nu Holdings", sh: 276.1148, avg: 13.6126, inv: 3758.63, hist: 3758.63 },
-  { t: "NVO", n: "Novo Nordisk ADR", sh: 32.7691, avg: 40.9783, inv: 1342.82, hist: 1342.82 },
-  { t: "ONON", n: "On Holding AG", sh: 14.408, avg: 33.4851, inv: 482.45, hist: 750.63 },
-  { t: "PAGS", n: "PagSeguro Digital", sh: 114.3751, avg: 9.1609, inv: 1047.77, hist: 1047.77 },
-  { t: "PATH", n: "UiPath Inc", sh: 83.0804, avg: 11.0215, inv: 915.67, hist: 1006.39 },
-  { t: "PYPL", n: "PayPal Holdings", sh: 17.34, avg: 57.7857, inv: 1002, hist: 1002 },
-  { t: "SHAK", n: "Shake Shack", sh: 24.2236, avg: 67.1918, inv: 1627.63, hist: 1741.13 },
-  { t: "SPOT", n: "Spotify Technology", sh: 1.2805, avg: 414.163, inv: 530.34, hist: 530.34 },
-  { t: "TTD", n: "The Trade Desk", sh: 43.51, avg: 34.7572, inv: 1512.29, hist: 1512.29 },
-  { t: "UNH", n: "UnitedHealth Group", sh: 2.16, avg: 277.5749, inv: 599.56, hist: 751.83 },
-  { t: "XP", n: "XP Inc", sh: 47.8, avg: 15.8278, inv: 756.57, hist: 756.57 },
-];
-
-const STORAGE_KEY = "portafolio-v1";
 
 // ── Diseño: tokens ───────────────────────────────────────────────────────────
 const C = {
@@ -65,20 +35,75 @@ const fmt = (v, d = 2) =>
 const fmtSigned = (v, d = 2) => (!isFinite(v) ? "—" : (v > 0 ? "+" : "") + fmt(v, d));
 
 // ── Lectura del archivo ──────────────────────────────────────────────────────
-// Orden de intento: 1) formato IBKR (CSV por secciones), 2) hoja propia con
-// "Ticker", 3) tabla genérica con Symbol/Position/Average Price.
+// Orden de intento: 1) IBKR Open Positions, 2) IBKR Transaction History,
+// 3) hoja propia con "Ticker", 4) tabla genérica.
 function parseWorkbook(wb) {
   let best = [];
   for (const name of wb.SheetNames) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null });
     const ibkr = parseIBKR(rows);
-    if (ibkr.length) return ibkr; // formato IBKR detectado: es el definitivo
+    if (ibkr.length) return ibkr;
+    const txns = parseIBKRTransactions(rows);
+    if (txns.length) return txns;
     const own = parseSheetRows(rows);
     const gen = parseGenericPositions(rows);
     const found = own.length >= gen.length ? own : gen;
     if (found.length > best.length) best = found;
   }
   return best;
+}
+
+// IBKR Transaction History CSV — calcula posiciones acumulando compras y
+// reduciendo cost basis en ventas (promedio ponderado).
+// Formato: Transaction History,Header,Date,Account,Description,Transaction Type,
+//          Symbol,Quantity,Price,Price Currency,Gross Amount,Commission,Net Amount
+function parseIBKRTransactions(rows) {
+  const low = (c) => String(c ?? "").trim().toLowerCase();
+  let header = null;
+  const txns = [];
+
+  for (const r of rows) {
+    if (!r || low(r[0]) !== "transaction history") continue;
+    if (low(r[1]) === "header") { header = r.map(low); continue; }
+    if (low(r[1]) !== "data" || !header) continue;
+
+    const col = (n) => header.indexOf(n);
+    const txType = String(r[col("transaction type")] ?? "").trim();
+    const currency = String(r[col("price currency")] ?? "").trim().toUpperCase();
+    if (!["Buy", "Sell"].includes(txType) || currency !== "USD") continue;
+
+    const sym = String(r[col("symbol")] ?? "").trim().toUpperCase();
+    const qty = num(r[col("quantity")]);
+    const gross = num(r[col("gross amount")]);
+    const comm = num(r[col("commission")]);
+    const desc = String(r[col("description")] ?? "").trim();
+    if (!sym || !isFinite(qty)) continue;
+    txns.push({ sym, txType, qty, gross, comm, desc });
+  }
+
+  if (!txns.length) return [];
+
+  const posMap = new Map();
+  for (const tx of txns) {
+    const pos = posMap.get(tx.sym) || { sh: 0, cost: 0, n: "" };
+    if (!pos.n && tx.desc) pos.n = tx.desc;
+    if (tx.txType === "Buy") {
+      pos.sh += tx.qty;
+      pos.cost += Math.abs(tx.gross) + Math.abs(tx.comm);
+    } else {
+      const sold = Math.abs(tx.qty);
+      if (pos.sh > 0) {
+        pos.cost = Math.max(0, pos.cost - (pos.cost / pos.sh) * sold);
+        pos.sh = Math.max(0, pos.sh - sold);
+      }
+    }
+    posMap.set(tx.sym, pos);
+  }
+
+  return [...posMap.entries()]
+    .filter(([, p]) => p.sh > 0.001 && p.cost > 0)
+    .map(([t, p]) => { const avg = p.cost / p.sh; return { t, n: p.n, sh: p.sh, avg, inv: p.cost, hist: p.cost }; })
+    .sort((a, b) => a.t.localeCompare(b.t));
 }
 
 // Formato IBKR (Activity Statement / Flex): filas tipo
@@ -470,7 +495,7 @@ function Venta({ pos }) {
 }
 
 // ── Portafolio + carga de Excel ──────────────────────────────────────────────
-function Portafolio({ portfolio, onLoad, onFileParsed, onReset, status }) {
+function Portafolio({ portfolio, onLoad, onFileParsed, status }) {
   const fileRef = useRef(null);
   const totInv = portfolio.reduce((a, p) => a + p.inv, 0);
   const totHist = portfolio.reduce((a, p) => a + p.hist, 0);
@@ -516,44 +541,47 @@ function Portafolio({ portfolio, onLoad, onFileParsed, onReset, status }) {
         )}
       </Card>
 
-      <Card
-        title="📊 Portafolio unificado"
-        right={
-          <Btn kind="ghost" small onClick={onReset}>↺ Restaurar original</Btn>
-        }
-      >
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: MONO, fontSize: 13 }}>
-            <thead>
-              <tr>
-                {["Ticker", "Acciones", "Prom.", "Invertido", "Histórico"].map((h, i) => (
-                  <th key={h} style={{ textAlign: i === 0 ? "left" : "right", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: C.muted, padding: "6px 8px", borderBottom: `2px solid ${C.ink}` }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {portfolio.map((p) => (
-                <tr key={p.t} onClick={() => onLoad(p.t)} style={{ cursor: "pointer" }} title={`${p.n} — toca para cargar en las calculadoras`}>
-                  <td style={{ padding: "8px", fontWeight: 700, color: C.blue, borderBottom: `1px dashed ${C.line}` }}>{p.t}</td>
-                  <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.sh, 2)}</td>
-                  <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.avg, 2)}</td>
-                  <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.inv)}</td>
-                  <td style={{ padding: "8px", textAlign: "right", color: C.muted, borderBottom: `1px dashed ${C.line}` }}>{fmt(p.hist)}</td>
-                </tr>
-              ))}
-              <tr>
-                <td style={{ padding: "10px 8px", fontWeight: 800 }}>TOTAL</td>
-                <td style={{ padding: "10px 8px", textAlign: "right", color: C.muted }}>{portfolio.length} pos.</td>
-                <td />
-                <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 800 }}>{fmt(totInv)}</td>
-                <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 800, color: C.muted }}>{fmt(totHist)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
-          💡 Toca cualquier fila y elige si quieres simular una compra (Promedio) o una venta.
-        </div>
+      <Card title="📊 Portafolio unificado">
+        {portfolio.length === 0 ? (
+          <div style={{ padding: "28px 0", textAlign: "center", fontSize: 13, color: C.muted }}>
+            Sin posiciones cargadas — sube tu CSV de IBKR arriba.
+          </div>
+        ) : (
+          <>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: MONO, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    {["Ticker", "Acciones", "Prom.", "Invertido", "Histórico"].map((h, i) => (
+                      <th key={h} style={{ textAlign: i === 0 ? "left" : "right", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: C.muted, padding: "6px 8px", borderBottom: `2px solid ${C.ink}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {portfolio.map((p) => (
+                    <tr key={p.t} onClick={() => onLoad(p.t)} style={{ cursor: "pointer" }} title={`${p.n} — toca para cargar en las calculadoras`}>
+                      <td style={{ padding: "8px", fontWeight: 700, color: C.blue, borderBottom: `1px dashed ${C.line}` }}>{p.t}</td>
+                      <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.sh, 2)}</td>
+                      <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.avg, 2)}</td>
+                      <td style={{ padding: "8px", textAlign: "right", borderBottom: `1px dashed ${C.line}` }}>{fmt(p.inv)}</td>
+                      <td style={{ padding: "8px", textAlign: "right", color: C.muted, borderBottom: `1px dashed ${C.line}` }}>{fmt(p.hist)}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td style={{ padding: "10px 8px", fontWeight: 800 }}>TOTAL</td>
+                    <td style={{ padding: "10px 8px", textAlign: "right", color: C.muted }}>{portfolio.length} pos.</td>
+                    <td />
+                    <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 800 }}>{fmt(totInv)}</td>
+                    <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 800, color: C.muted }}>{fmt(totHist)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
+              💡 Toca cualquier fila y elige si quieres simular una compra (Promedio) o una venta.
+            </div>
+          </>
+        )}
       </Card>
     </>
   );
@@ -588,40 +616,12 @@ function ImportDialog({ pending, currentCount, onReplace, onMerge, onCancel }) {
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("promedio");
-  const [portfolio, setPortfolio] = useState(DEFAULT_PORTFOLIO);
+  const [portfolio, setPortfolio] = useState([]);
   const [ticker, setTicker] = useState("");
   const [shares, setShares] = useState("");
   const [avg, setAvg] = useState("");
-  const [pending, setPending] = useState(null); // { rows, fileName, dupes }
+  const [pending, setPending] = useState(null);
   const [status, setStatus] = useState(null);
-  const [loaded, setLoaded] = useState(false);
-
-  // Cargar portafolio guardado (persistente entre sesiones)
-  useEffect(() => {
-    (async () => {
-      try {
-        if (window.storage) {
-          const r = await window.storage.get(STORAGE_KEY);
-          if (r?.value) {
-            const data = JSON.parse(r.value);
-            if (Array.isArray(data) && data.length) setPortfolio(data);
-          }
-        }
-      } catch {
-        // sin datos guardados todavía — se usa el portafolio del Excel original
-      }
-      setLoaded(true);
-    })();
-  }, []);
-
-  const persist = async (data) => {
-    setPortfolio(data);
-    try {
-      if (window.storage) await window.storage.set(STORAGE_KEY, JSON.stringify(data));
-    } catch {
-      // si falla el guardado, la app sigue funcionando en memoria
-    }
-  };
 
   const onFileParsed = (rows, fileName) => {
     if (!rows) {
@@ -638,24 +638,18 @@ export default function App() {
     setPending({ rows, fileName, dupes });
   };
 
-  const applyReplace = async () => {
-    await persist([...pending.rows].sort((a, b) => a.t.localeCompare(b.t)));
-    setStatus({ ok: true, msg: `✓ Portafolio reemplazado: ${pending.rows.length} posiciones de "${pending.fileName}".` });
+  const applyReplace = () => {
+    setPortfolio([...pending.rows].sort((a, b) => a.t.localeCompare(b.t)));
+    setStatus({ ok: true, msg: `✓ Portafolio cargado: ${pending.rows.length} posiciones de "${pending.fileName}".` });
     setPending(null);
     setTicker(""); setShares(""); setAvg("");
   };
 
-  const applyMerge = async () => {
+  const applyMerge = () => {
     const merged = mergePortfolios(portfolio, pending.rows);
-    await persist(merged);
+    setPortfolio(merged);
     setStatus({ ok: true, msg: `✓ Datos añadidos: ahora tienes ${merged.length} posiciones (${pending.dupes} combinadas con promedio ponderado).` });
     setPending(null);
-    setTicker(""); setShares(""); setAvg("");
-  };
-
-  const onReset = async () => {
-    await persist(DEFAULT_PORTFOLIO);
-    setStatus({ ok: true, msg: "✓ Portafolio restaurado a los datos de tu Excel original." });
     setTicker(""); setShares(""); setAvg("");
   };
 
@@ -719,31 +713,26 @@ export default function App() {
           ))}
         </div>
 
-        {!loaded ? (
-          <Card><div style={{ fontSize: 13, color: C.muted, textAlign: "center", padding: 10 }}>Cargando tu portafolio…</div></Card>
-        ) : (
-          <>
-            {tab !== "portafolio" && (
-              <PositionPicker
-                portfolio={portfolio}
-                ticker={ticker} setTicker={setTicker}
-                shares={shares} setShares={setShares}
-                avg={avg} setAvg={setAvg}
-              />
-            )}
-            {tab === "promedio" && <Promedio pos={{ shares, avg }} />}
-            {tab === "venta" && <Venta pos={{ shares, avg }} />}
-            {tab === "portafolio" && (
-              <Portafolio
-                portfolio={portfolio}
-                onLoad={loadFromPortfolio}
-                onFileParsed={onFileParsed}
-                onReset={onReset}
-                status={status}
-              />
-            )}
-          </>
-        )}
+        <>
+          {tab !== "portafolio" && (
+            <PositionPicker
+              portfolio={portfolio}
+              ticker={ticker} setTicker={setTicker}
+              shares={shares} setShares={setShares}
+              avg={avg} setAvg={setAvg}
+            />
+          )}
+          {tab === "promedio" && <Promedio pos={{ shares, avg }} />}
+          {tab === "venta" && <Venta pos={{ shares, avg }} />}
+          {tab === "portafolio" && (
+            <Portafolio
+              portfolio={portfolio}
+              onLoad={loadFromPortfolio}
+              onFileParsed={onFileParsed}
+              status={status}
+            />
+          )}
+        </>
 
         <div style={{ fontSize: 11, color: C.muted, textAlign: "center", marginTop: 8 }}>
           💡 Escribe en los campos con borde azul · todo lo demás se calcula solo.
