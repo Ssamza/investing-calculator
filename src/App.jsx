@@ -1064,7 +1064,7 @@ export default function App() {
 			.upsert({ id: 1, data, updated_at: new Date().toISOString() });
 	};
 
-	const onFileParsed = async (rows, fileName) => {
+	const onFileParsed = (rows, fileName) => {
 		if (!rows) {
 			setStatus({ ok: false, msg: `✕ No pude leer "${fileName}".` });
 			return;
@@ -1073,17 +1073,14 @@ export default function App() {
 			setStatus({ ok: false, msg: `✕ No encontré posiciones en "${fileName}".` });
 			return;
 		}
-		// Leer siempre desde Supabase para evitar cualquier problema de estado
-		const { data: row } = await supabase.from("holdings").select("data").eq("id", 1).single();
-		const current = Array.isArray(row?.data) ? row.data : [];
-		const merged = mergePortfolios(current, rows);
-		await persist(merged);
-		const added = merged.length - current.length;
-		const updated = rows.length - Math.max(0, added);
-		setStatus({
-			ok: true,
-			msg: `✓ "${fileName}" — ${added} posiciones nuevas, ${updated} combinadas.`,
+		setPortfolio((prev) => {
+			const merged = mergePortfolios(prev, rows);
+			supabase
+				.from("holdings")
+				.upsert({ id: 1, data: merged, updated_at: new Date().toISOString() });
+			return merged;
 		});
+		setStatus({ ok: true, msg: `✓ "${fileName}" cargado y combinado.` });
 		setTicker("");
 		setShares("");
 		setAvg("");
