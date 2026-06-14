@@ -1360,7 +1360,7 @@ export default function App() {
 								📈 Promedio — Simular una compra
 							</Btn>
 							<Btn kind="green" onClick={() => goTo(destPick, "venta")}>
-								💰 Venta — <Samp></Samp>imular una venta
+								💰 Venta — simular una venta
 							</Btn>
 							<Btn kind="ghost" onClick={() => setDestPick(null)}>
 								Cancelar
