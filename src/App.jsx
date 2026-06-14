@@ -817,14 +817,14 @@ function Venta({ pos }) {
 }
 
 // ── Portafolio + carga de Excel ──────────────────────────────────────────────
-function Portafolio({ portfolio, onLoad, onFileParsed, status }) {
+function Portafolio({ portfolio, onLoad, onFileParsed, onClear, status }) {
 	const fileRef = useRef(null);
 	const totInv = portfolio.reduce((a, p) => a + p.inv, 0);
 	const totHist = portfolio.reduce((a, p) => a + p.hist, 0);
 
 	const handleFile = async (e) => {
 		const file = e.target.files?.[0];
-		e.target.value = ""; // permite re-subir el mismo archivo
+		e.target.value = "";
 		if (!file) return;
 		try {
 			let wb;
@@ -844,15 +844,12 @@ function Portafolio({ portfolio, onLoad, onFileParsed, status }) {
 
 	return (
 		<>
-			<Card title="📥 Actualizar desde Excel">
+			<Card title="📥 Cargar CSV de IBKR">
 				<div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
-					Sube el <b style={{ color: C.ink }}>CSV de IBKR</b> (Activity
-					Statement o reporte de posiciones). La app lee la sección{" "}
-					<i>Open Positions</i>: símbolo, cantidad, Cost Price y Cost Basis.
-					También acepta Excel con columnas Ticker / Acciones / Precio Promedio.
-					Después de leerlo te preguntaré si quieres{" "}
-					<b style={{ color: C.ink }}>reemplazar</b> los datos actuales o{" "}
-					<b style={{ color: C.ink }}>añadirlos</b> a los que ya están.
+					Cada archivo que subas se <b style={{ color: C.ink }}>combina</b> con
+					el portafolio actual — las posiciones repetidas se suman con promedio
+					ponderado. Para empezar desde cero usa el botón{" "}
+					<b style={{ color: C.ink }}>Limpiar</b>.
 				</div>
 				<input
 					ref={fileRef}
@@ -861,9 +858,16 @@ function Portafolio({ portfolio, onLoad, onFileParsed, status }) {
 					onChange={handleFile}
 					style={{ display: "none" }}
 				/>
-				<Btn kind="blue" onClick={() => fileRef.current?.click()}>
-					📂 Subir CSV de IBKR o Excel
-				</Btn>
+				<div style={{ display: "flex", gap: 8 }}>
+					<div style={{ flex: 1 }}>
+						<Btn kind="blue" onClick={() => fileRef.current?.click()}>
+							📂 Subir CSV de IBKR
+						</Btn>
+					</div>
+					<Btn kind="ghost" small onClick={onClear}>
+						🗑 Limpiar
+					</Btn>
+				</div>
 				{status && (
 					<div
 						style={{
@@ -1026,80 +1030,6 @@ function Portafolio({ portfolio, onLoad, onFileParsed, status }) {
 	);
 }
 
-// ── Diálogo: ¿reemplazar o añadir? ───────────────────────────────────────────
-function ImportDialog({ pending, currentCount, onReplace, onMerge, onCancel }) {
-	const dupes = pending.dupes,
-		news = pending.rows.length - dupes;
-	return (
-		<div
-			style={{
-				position: "fixed",
-				inset: 0,
-				background: "rgba(15,27,38,0.55)",
-				display: "flex",
-				alignItems: "center",
-				justifyContent: "center",
-				padding: 16,
-				zIndex: 50,
-			}}
-		>
-			<div
-				style={{
-					background: C.card,
-					borderRadius: 16,
-					padding: 22,
-					maxWidth: 420,
-					width: "100%",
-					border: `1px solid ${C.line}`,
-				}}
-			>
-				<div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>
-					📥 {pending.fileName}
-				</div>
-				<div
-					style={{
-						fontSize: 13,
-						color: C.muted,
-						marginBottom: 16,
-						lineHeight: 1.5,
-					}}
-				>
-					Encontré{" "}
-					<b style={{ color: C.ink }}>{pending.rows.length} posiciones</b> en el
-					archivo ({news} nuevas, {dupes} que ya existen). Tu portafolio actual
-					tiene {currentCount} posiciones.
-					<br />
-					¿Qué quieres hacer?
-				</div>
-				<div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-					<Btn kind="blue" onClick={onReplace}>
-						🔄 Reemplazar todo con el archivo
-					</Btn>
-					<Btn kind="green" onClick={onMerge}>
-						➕ Añadir a lo que ya está
-					</Btn>
-					<Btn kind="ghost" onClick={onCancel}>
-						Cancelar
-					</Btn>
-				</div>
-				<div
-					style={{
-						fontSize: 11,
-						color: C.muted,
-						marginTop: 12,
-						lineHeight: 1.5,
-					}}
-				>
-					<b>Reemplazar:</b> borra la lista actual y usa solo el archivo.
-					<br />
-					<b>Añadir:</b> los tickers repetidos se combinan (acciones sumadas y
-					promedio ponderado); los nuevos se agregan.
-				</div>
-			</div>
-		</div>
-	);
-}
-
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
 	const [tab, setTab] = useState("promedio");
@@ -1107,7 +1037,6 @@ export default function App() {
 	const [ticker, setTicker] = useState("");
 	const [shares, setShares] = useState("");
 	const [avg, setAvg] = useState("");
-	const [pending, setPending] = useState(null); // { rows, fileName, dupes }
 	const [status, setStatus] = useState(null);
 	const [loaded, setLoaded] = useState(false);
 
@@ -1130,47 +1059,31 @@ export default function App() {
 			.upsert({ id: 1, data, updated_at: new Date().toISOString() });
 	};
 
-	const onFileParsed = (rows, fileName) => {
+	const onFileParsed = async (rows, fileName) => {
 		if (!rows) {
-			setStatus({
-				ok: false,
-				msg: `✕ No pude leer "${fileName}". ¿Es un Excel válido?`,
-			});
+			setStatus({ ok: false, msg: `✕ No pude leer "${fileName}".` });
 			return;
 		}
 		if (!rows.length) {
-			setStatus({
-				ok: false,
-				msg: `✕ No encontré posiciones en "${fileName}". Verifica que tenga columnas Ticker / Acciones / Precio Promedio.`,
-			});
+			setStatus({ ok: false, msg: `✕ No encontré posiciones en "${fileName}".` });
 			return;
 		}
-		const existing = new Set(portfolio.map((p) => p.t));
-		const dupes = rows.filter((r) => existing.has(r.t)).length;
-		setStatus(null);
-		setPending({ rows, fileName, dupes });
-	};
-
-	const applyReplace = async () => {
-		await persist([...pending.rows].sort((a, b) => a.t.localeCompare(b.t)));
+		const merged = mergePortfolios(portfolio, rows);
+		await persist(merged);
+		const added = merged.length - portfolio.length;
+		const updated = rows.length - added;
 		setStatus({
 			ok: true,
-			msg: `✓ Portafolio reemplazado: ${pending.rows.length} posiciones de "${pending.fileName}".`,
+			msg: `✓ "${fileName}" cargado — ${added} posiciones nuevas, ${updated} combinadas.`,
 		});
-		setPending(null);
 		setTicker("");
 		setShares("");
 		setAvg("");
 	};
 
-	const applyMerge = async () => {
-		const merged = mergePortfolios(portfolio, pending.rows);
-		await persist(merged);
-		setStatus({
-			ok: true,
-			msg: `✓ Datos añadidos: ahora tienes ${merged.length} posiciones (${pending.dupes} combinadas con promedio ponderado).`,
-		});
-		setPending(null);
+	const onClear = async () => {
+		await persist([]);
+		setStatus({ ok: true, msg: "✓ Portafolio limpiado." });
 		setTicker("");
 		setShares("");
 		setAvg("");
@@ -1314,6 +1227,7 @@ export default function App() {
 							portfolio={portfolio}
 							onLoad={loadFromPortfolio}
 							onFileParsed={onFileParsed}
+							onClear={onClear}
 							status={status}
 						/>
 					)}
@@ -1334,16 +1248,6 @@ export default function App() {
 					Herramienta de cálculo, no asesoría financiera.
 				</div>
 			</div>
-
-			{pending && (
-				<ImportDialog
-					pending={pending}
-					currentCount={portfolio.length}
-					onReplace={applyReplace}
-					onMerge={applyMerge}
-					onCancel={() => setPending(null)}
-				/>
-			)}
 
 			{destPick && (
 				<div
