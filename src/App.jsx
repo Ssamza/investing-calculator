@@ -1034,11 +1034,15 @@ function Portafolio({ portfolio, onLoad, onFileParsed, onClear, status }) {
 export default function App() {
 	const [tab, setTab] = useState("promedio");
 	const [portfolio, setPortfolio] = useState([]);
+	const portfolioRef = useRef([]);
 	const [ticker, setTicker] = useState("");
 	const [shares, setShares] = useState("");
 	const [avg, setAvg] = useState("");
 	const [status, setStatus] = useState(null);
 	const [loaded, setLoaded] = useState(false);
+
+	// Mantiene el ref sincronizado con el estado en cada render
+	portfolioRef.current = portfolio;
 
 	useEffect(() => {
 		supabase
@@ -1054,6 +1058,7 @@ export default function App() {
 
 	const persist = async (data) => {
 		setPortfolio(data);
+		portfolioRef.current = data;
 		await supabase
 			.from("holdings")
 			.upsert({ id: 1, data, updated_at: new Date().toISOString() });
@@ -1068,10 +1073,11 @@ export default function App() {
 			setStatus({ ok: false, msg: `✕ No encontré posiciones en "${fileName}".` });
 			return;
 		}
-		const merged = mergePortfolios(portfolio, rows);
+		const current = portfolioRef.current;
+		const merged = mergePortfolios(current, rows);
 		await persist(merged);
-		const added = merged.length - portfolio.length;
-		const updated = rows.length - added;
+		const added = merged.length - current.length;
+		const updated = rows.length - Math.max(0, added);
 		setStatus({
 			ok: true,
 			msg: `✓ "${fileName}" cargado — ${added} posiciones nuevas, ${updated} combinadas.`,
