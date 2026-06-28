@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { STORAGE_KEY, C, MONO } from "./lib/constants.ts";
+import { C, MONO } from "./lib/constants.ts";
+import { supabase } from "./lib/supabase.ts";
 import { mergePortfolios } from "./lib/parsers.ts";
 import { Card, Btn } from "./components/ui.tsx";
 import PositionPicker from "./components/PositionPicker.tsx";
@@ -35,24 +36,24 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      try {
-        if (window.storage) {
-          const r = await window.storage.get(STORAGE_KEY);
-          if (r?.value) {
-            const data: unknown = JSON.parse(r.value);
-            if (Array.isArray(data) && data.length) setPortfolio(data as Position[]);
-          }
-        }
-      } catch { /* no saved data yet */ }
+      const { data: row, error } = await supabase
+        .from("holdings")
+        .select("data")
+        .eq("id", 1)
+        .single();
+      if (!error && Array.isArray((row as any)?.data) && (row as any).data.length) {
+        setPortfolio((row as any).data as Position[]);
+      }
       setLoaded(true);
     })();
   }, []);
 
   const persist = async (data: Position[]) => {
     setPortfolio(data);
-    try {
-      if (window.storage) await window.storage.set(STORAGE_KEY, JSON.stringify(data));
-    } catch { /* storage unavailable */ }
+    portfolioRef.current = data;
+    await supabase
+      .from("holdings")
+      .upsert({ id: 1, data, updated_at: new Date().toISOString() });
   };
 
   const onFileParsed = (rows: Position[] | null, fileName: string) => {
